@@ -101,6 +101,7 @@ def sy(token):
         print("首页浏览成功，获得1积分")
     else:
         print("首页浏览失败:", res_json.get("msg", "未知错误"))
+        print("首页浏览接口原始返回：", res_json)  # 可选：首页浏览失败也输出返回信息
 
 
 def qd(token):
@@ -115,9 +116,10 @@ def qd(token):
         else:
             print("签到出错❌\n", res_json)
     except Exception as e:
-        print("签到出错❌\n", res_json)
+        print("签到出错❌\n", res_json) 
 
 
+# 返回（是否成功，错误信息，原始响应）
 def zfbtask(token):
     url = "https://userapi.qiekj.com/task/completed"
     t = str(int(time.time() * 1000))
@@ -136,9 +138,18 @@ def zfbtask(token):
         'User-Agent': ua
     }
     data = {"taskCode": 9, "token": token}
-    res_text = requests.post(url=url, headers=headers, data=data).text
-    res_json = json.loads(res_text)
-    return res_json
+    try:
+        res = requests.post(url=url, headers=headers, data=data)
+        res_text = res.text
+        res_json = json.loads(res_text)
+        # 返回成功状态、错误信息、原始响应
+        if res_json["code"] == 0 and res_json["data"] == True:
+            return (True, "任务成功", res_json)
+        else:
+            return (False, res_json.get("msg", "未知错误"), res_json)
+    except Exception as e:
+        error_info = f"接口请求异常：{str(e)}"
+        return (False, error_info, None)  # 异常时res_json为None
 
 
 def tx(token, taskCode):
@@ -156,8 +167,7 @@ def appvideo(ua, token, i):
         print('第' + str(i) + '次APP视频任务完成')
         return "t"
     else:
-        # print('出错，跳过')
-        # print(res_json)
+        # print(f"第{str(i)}次APP视频任务失败，原始返回：", res_json)
         return "f"
 
 
@@ -172,11 +182,9 @@ def getusername(token):
             else:
                 print("-----", res_json["data"]["userName"], "-----")
         else:
-            print("❌")
-            print(res_json)
+            print("❌获取用户名失败，原始返回：", res_json)
     except:
-        print("❌")
-        print(res_json)
+        print("❌获取用户名异常，原始返回：", res_json)
 
 
 notfin = ["7328b1db-d001-4e6a-a9e6-6ae8d281ddbf", "e8f837b8-4317-4bf5-89ca-99f809bf9041",
@@ -191,9 +199,73 @@ def solt(token):
         "token": token
     }
     res_json = httprequests(url=url, data=data, token=token, mean="post")
-    print(res_json)
+    print("屏蔽查询接口返回：", res_json)
+
+def run_zfb_video_task(token):
+    max_video_count = 50  # 最大支付宝视频任务执行次数
+    max_verify_wait = 120  # 最大等待用户APP验证时间（秒），可调整
+    poll_interval = 10  # 验证状态轮询间隔（秒），可调整
+    verify_tips_shown = False  # 标记是否已显示验证提示，避免重复弹窗
+
+    # 自定义未验证关键词：请根据你实际接口返回的提示文字修改/补充
+    unverify_keywords = ["未验证", "请先在APP完成验证", "需要登录", "验证失效", "请打开APP验证", "获取异常"]
+
+    for num in range(max_video_count):
+        is_success, err_msg, res_json = zfbtask(token=token)
+
+        # 情况1：任务执行成功，正常继续
+        if is_success:
+            print("第", str(num + 1), "次支付宝视频任务完成")
+            time.sleep(15)
+            verify_tips_shown = False  # 成功后重置提示标记
+            continue
+
+        # 情况2：任务失败，区分失败类型
+        # 判断是否为“未验证”类型失败
+        is_unverify = False
+        # 从错误信息和原始响应中检测未验证关键词
+        if err_msg:
+            is_unverify = any(keyword in err_msg for keyword in unverify_keywords)
+        if not is_unverify and res_json:
+            is_unverify = any(keyword in res_json.get("msg", "") for keyword in unverify_keywords)
+
+        # 子情况2.1：检测到未验证，提示用户并轮询等待验证
+        if is_unverify and not verify_tips_shown:
+            print(f"\n⚠️  检测到支付宝视频任务需要APP验证！")
+            print(f"当前错误信息：{err_msg}")
+            print(f"当前接口原始返回：{res_json}")  # 输出未验证时的返回信息
+            print(f"请在 {max_verify_wait} 秒内打开对应APP完成验证，验证后脚本将自动继续...")
+            verify_tips_shown = True
+
+            # 轮询等待用户验证
+            wait_elapsed = 0  # 已等待时间
+            while wait_elapsed < max_verify_wait:
+                time.sleep(poll_interval)
+                wait_elapsed += poll_interval
+                # 轮询接口，检查是否已验证成功
+                check_success, check_err, check_res = zfbtask(token=token)
+                if check_success:
+                    print("✅  检测到验证成功，继续执行支付宝视频任务！")
+                    # 重新执行当前次任务
+                    curr_success, curr_err, curr_res = zfbtask(token=token)
+                    if curr_success:
+                        print("第", str(num + 1), "次支付宝视频任务完成")
+                    time.sleep(15)
+                    verify_tips_shown = False
+                    break
+            # 超时未验证，终止该任务
+            if wait_elapsed >= max_verify_wait and verify_tips_shown:
+                print(f"⌛  超过 {max_verify_wait} 秒未完成验证，暂停支付宝视频任务")
+                break
+
+        # 子情况2.2：非未验证失败（任务已达上限/其他异常），终止循环并输出完整返回信息
+        else:
+            print(f"支付宝视频任务执行失败：{err_msg}，任务已达上限或接口异常，终止该任务")
+            print(f"支付宝视频任务接口原始返回信息：{res_json}")  # 打印完整返回数据
+            break
 
 
+# 主循环：遍历所有账号执行任务
 for tk in tokens:
     getusername(token=tk)
     time.sleep(1)
@@ -212,47 +284,51 @@ for tk in tokens:
     res_json = httprequests(url=url, token=tk, data=data, mean="post")
     # print(res_json)
 
+    items = []
     try:
         if res_json["code"] == 0:
             items = res_json["data"]["items"]
         else:
             print("❌获取任务列表失败，跳过任务")
-            print(res_json)
+            print("获取任务列表原始返回：", res_json)
     except Exception as e:
         print("获取任务列表失败，跳过任务")
-        print(e)
+        print("异常信息：", e)
+        print("任务列表接口返回：", res_json)  # 异常时输出返回
+
+    # 执行常规任务
     for item in items:
         if item['completedStatus'] == 0 and item["taskCode"] not in notfin:
             print("\n------任务分割线-----\n")
             print("开始执行任务  ——  ", item["title"])
             for num in range(item["dailyTaskLimit"]):
                 res_json = tx(token=tk, taskCode=item["taskCode"])
-                # print(res_json)
-                # if input(1) == 1:
-                # exit()
+                # 可选：常规任务执行失败时输出返回信息
+                # if not (res_json["code"] == 0 and res_json["data"] == True):
+                #     print(f"第{num+1}次{item['title']}执行失败，原始返回：", res_json)
                 if res_json["code"] == 0 and res_json["data"] == True:
                     time.sleep(10)
                 else:
-                    print("出错❌", res_json)
+                    print("出错❌", res_json)  # 常规任务失败已输出完整返回
                     time.sleep(10)
             print(item["title"], "  ——  任务完成")
             time.sleep(5)
+
+    # 执行APP视频任务
     for num in range(20):
         flag = appvideo(ua=ua, token=tk, i=num + 1)
         if flag == "f":
             break
         time.sleep(15)
-    for num in range(50):
-        res_json = zfbtask(token=tk)
-        if res_json["code"] == 0 and res_json["data"] == True:
-            print("第", str(num + 1), "次支付宝视频")
-        else:
-            break
-        time.sleep(15)
+
+    # 执行支付宝视频任务
+    run_zfb_video_task(tk)
+
+    # 查询最终积分
     time.sleep(3)
     url = "https://userapi.qiekj.com/user/balance"
     data = {"token": tk}
     res_json = httprequests(url=url, data=data, token=tk, mean="post")
-    print("总积分：" + str(res_json['data']['integral']) + "今日积分" + str(res_json['data']['integral'] - yesterday))
+    print("总积分：" + str(res_json['data']['integral']) + " 今日积分：" + str(res_json['data']['integral'] - yesterday))
     print("所有任务均已完成------开始下一个账号\n\n\n")
     time.sleep(3)
